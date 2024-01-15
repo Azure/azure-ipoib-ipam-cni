@@ -45,8 +45,9 @@ vet: golangci-lint ## Run go vet against code.
 ##@ Build
 
 .PHONY: build
-build: $(LOCALBIN) fmt vet ## Build manager binary.
+build: clean $(LOCALBIN) fmt vet ## Build manager binary.
 	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -o bin/azure-ipoib-ipam-cni ./cmd/
+	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -o bin/install ./cmd/install
 ##@ Build Dependencies
 
 .PHONY: install-dependencies
@@ -76,3 +77,7 @@ GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(LOCALBIN)/golangci-lint || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(LOCALBIN) latest
+
+.PHONY: clean
+clean: 
+	rm -rf $(LOCALBIN)
