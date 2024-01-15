@@ -38,6 +38,36 @@ jobs:
           name: azure-ipoib-ipam-cni-${{ matrix.os }}-${{ matrix.arch }}
           path: bin/azure-ipoib-ipam-cni-${{ matrix.os }}-${{ matrix.arch }}
           if-no-files-found: error
+  build-docker-images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm
+          - os: linux
+            arch: arm64
+    permissions:
+      packages: write
+      actions: read
+      contents: read
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ghcr.io/azure/azure-ipoib-ipam-cni:${{ matrix.os }}-${{ matrix.arch }}
   publish:
       runs-on: ubuntu-latest
       needs:
