@@ -1,8 +1,7 @@
 # azure-ipoib-ipam-cni
-This is a CNI ipam plugin for Azure vm which supports RDMA. It will retrieve an IP address from HyperV kv pair and assign it to the ib nic.
 
 ## Overview
-azure-ipoib-ipam-cni is intended to be used as a ipam CNI plugin for Kubernetes. It is designed to be used in conjunction with the [host-device](https://www.cni.dev/plugins/current/main/host-device/)
+azure-ipoib-ipam-cni is intended to be used as a ipam CNI plugin for Kubernetes.It will retrieve an IP address from HyperV kv pair and assign it to the ib nic. It is designed to be used in conjunction with the [host-device](https://www.cni.dev/plugins/current/main/host-device/) and [network operator](https://github.com/Mellanox/network-operator).
 
 ## Requirements
 
