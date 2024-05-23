@@ -25,7 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4.1.1 # v4.1.1
       - name: Setup Golang
-        uses: actions/setup-go@v4.1.0 # v4.1.0
+        uses: actions/setup-go@v5.0.1 # v4.1.0
         with:
           go-version-file: go.mod
       - name: Build binary
@@ -54,8 +54,10 @@ jobs:
       actions: read
       contents: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.1 # v4.1.1
       - name: Login to GHCR
-        uses: docker/login-action@v1
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -64,8 +66,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile
-          platforms: ${{ matrix.platforms }}
+          platforms: linux/amd64,linux/arm64,linux/arm
           push: true
           tags: ghcr.io/azure/azure-ipoib-ipam-cni:${{ matrix.os }}-${{ matrix.arch }}
   publish:
@@ -77,11 +78,11 @@ jobs:
         pull-requests: write
       steps:
         - name: Download artifacts
-          uses: actions/download-artifact@v3.0.2 # v3.0.2
+          uses: actions/download-artifact@v4.1.7 # v3.0.2
           with:
             path: ./artifacts
         - name: Publish release
-          uses: softprops/action-gh-release@v1 # v1
+          uses: softprops/action-gh-release@v2 # v1
           with:
             files: |
               ./artifacts/azure-ipoib-ipam-cni-*-*/*
