@@ -26,7 +26,11 @@ const (
 )
 
 func main() {
-	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, bv.BuildString(IPAMPluginName))
+	skel.PluginMainFuncs(skel.CNIFuncs{
+		Add:   cmdAdd,
+		Del:   cmdDel,
+		Check: cmdCheck,
+	}, version.All, bv.BuildString(IPAMPluginName))
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
