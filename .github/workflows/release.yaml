@@ -64,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: Dockerfile
           platforms: ${{ matrix.platforms }}
           push: true
           tags: ghcr.io/azure/azure-ipoib-ipam-cni:${{ matrix.os }}-${{ matrix.arch }}
