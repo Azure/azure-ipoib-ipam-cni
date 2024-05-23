@@ -81,7 +81,7 @@ jobs:
           with:
             path: ./artifacts
         - name: Publish release
-          uses: softprops/action-gh-release@v1 # v1
+          uses: softprops/action-gh-release@v2 # v1
           with:
             files: |
               ./artifacts/azure-ipoib-ipam-cni-*-*/*
