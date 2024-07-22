@@ -4,7 +4,7 @@ go 1.21.4
 
 require (
 	github.com/Azure/hyperkv v0.0.1
-	github.com/containernetworking/cni v1.2.2
+	github.com/containernetworking/cni v1.2.3
 	github.com/containernetworking/plugins v1.5.1
 	github.com/vishvananda/netlink v1.2.1-beta.2
 )
