@@ -1,6 +1,6 @@
 module github.com/Azure/azure-ipoib-ipam-cni
 
-go 1.21.4
+go 1.23
 
 require (
 	github.com/Azure/hyperkv v0.0.1
