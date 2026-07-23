@@ -8,7 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
+	"sync/atomic"
 
 	"github.com/Azure/azure-ipoib-ipam-cni/pkg/ibaddrparser"
 )
@@ -38,12 +38,11 @@ type Server struct {
 	// readFile allows tests to stub file reads. When nil, os.ReadFile is used.
 	readFile func(string) ([]byte, error)
 
-	// contentMu guards the in-memory KVP store content below.
-	contentMu sync.RWMutex
-	// content holds the KVP store bytes loaded at startup / last reload.
-	content []byte
-	// loaded reports whether content has been successfully loaded at least once.
-	loaded bool
+	// content holds the KVP store bytes loaded at startup / last reload. It is
+	// replaced atomically as a whole on each (re)load, never mutated in place,
+	// so readers can take a lock-free snapshot. A nil pointer means the store
+	// has not been loaded yet.
+	content atomic.Pointer[[]byte]
 }
 
 // NewServer returns a Server with the given KVP store path and optional profile
@@ -84,19 +83,18 @@ func (s *Server) Reload() error {
 	if err != nil {
 		return err
 	}
-	s.contentMu.Lock()
-	s.content = content
-	s.loaded = true
-	s.contentMu.Unlock()
+	s.content.Store(&content)
 	return nil
 }
 
 // storeContent returns the in-memory KVP store content and whether it has been
 // loaded.
 func (s *Server) storeContent() ([]byte, bool) {
-	s.contentMu.RLock()
-	defer s.contentMu.RUnlock()
-	return s.content, s.loaded
+	p := s.content.Load()
+	if p == nil {
+		return nil, false
+	}
+	return *p, true
 }
 
 // health advertises the webhook's capabilities. This webhook is a Profile
