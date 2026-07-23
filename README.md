@@ -1,7 +1,7 @@
 # azure-ipoib-ipam-cni
 
 ## Overview
-azure-ipoib-ipam-cni is intended to be used as a ipam CNI plugin for Kubernetes.It will retrieve an IP address from HyperV kv pair and assign it to the ib nic. It is designed to be used in conjunction with the [host-device](https://www.cni.dev/plugins/current/main/host-device/) and [network operator](https://github.com/Mellanox/network-operator).
+azure-ipoib-ipam-cni is intended to be used as an IPAM CNI plugin for Kubernetes. It will retrieve an IP address from a HyperV kv pair and assign it to the IB NIC. It is designed to be used in conjunction with the [host-device](https://www.cni.dev/plugins/current/main/host-device/) and [network operator](https://github.com/Mellanox/network-operator).
 
 ## Requirements
 
@@ -154,10 +154,19 @@ Ready-to-apply manifests live in [`deploy/`](deploy):
   webhook as its own DaemonSet next to an existing DRANet DaemonSet. Both share
   the `/var/run/dranet` host directory so DRANet can dial the webhook's Unix
   socket.
+
+  ```bash
+  kubectl apply -f deploy/webhook-daemonset.yaml
+  ```
+
 * [`deploy/dranet-with-webhook-sidecar.yaml`](deploy/dranet-with-webhook-sidecar.yaml)
   is an example DRANet DaemonSet with the webhook running as a sidecar container
   in the same Pod, sharing the socket via an `emptyDir` volume and already
   wired up with the `--profile-provider`/`--webhook-url` flags below.
+
+  ```bash
+  kubectl apply -f deploy/dranet-with-webhook-sidecar.yaml
+  ```
 
 Both manifests use the `ghcr.io/azure/azure-ipoib-ipam-cni-webhook` image built
 from [`Dockerfile.webhook`](Dockerfile.webhook); adjust the image tag to match
