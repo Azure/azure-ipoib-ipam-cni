@@ -118,3 +118,56 @@ root@nicworkspace-594fc84669-zlqn6:/# ip a
     inet6 fe80::215:5dff:fd33:ff0b/64 scope link
        valid_lft forever preferred_lft forever
 ```
+
+## Usage with DRANet (Profile Provider webhook)
+
+[DRANet](https://github.com/kubernetes-sigs/dranet) is a Kubernetes network
+driver built on Dynamic Resource Allocation (DRA). It attaches devices to Pods
+via NRI instead of the CNI `host-device` chain, so the CNI IPAM plugin above is
+not invoked. To supply IPoIB addresses from the HyperV KVP store in a DRANet
+cluster, this repository also ships a DRANet
+[Bring Your Own DRANet Provider (BYODP)](https://dranet.sigs.k8s.io/docs/contributing/webhook-providers/)
+**Profile Provider** webhook (`cmd/webhook`).
+
+The webhook reuses the same MAC-to-IP resolution logic as the CNI plugin
+(`pkg/ibaddrparser`). On `GetProfileConfig`, DRANet passes the device's MAC
+address; the webhook reads `/var/lib/hyperv/.kvp_pool_0`, resolves the IPoIB
+address, and returns it to DRANet as an interface address. Because the KVP store
+is a read-only mapping, `ReleaseProfileConfig` is a no-op and the webhook is
+naturally idempotent.
+
+### Running the webhook
+
+The webhook is meant to run node-local alongside the DRANet DaemonSet (as a
+sidecar or a separate DaemonSet), with the HyperV KVP store mounted read-only
+and, for the Unix-socket transport, a shared socket directory.
+
+```
+webhook \
+  --bind-address=unix:///var/run/dranet/webhook.sock \
+  --kvp-path=/var/lib/hyperv/.kvp_pool_0
+```
+
+Flags:
+
+* `--bind-address`: a TCP address (e.g. `:8080`) or a Unix socket path prefixed
+  with `unix://` (e.g. `unix:///var/run/dranet/webhook.sock`). DRANet supports
+  both transports via its `--webhook-url` flag.
+* `--kvp-path`: path to the HyperV KVP pool file (default
+  `/var/lib/hyperv/.kvp_pool_0`).
+* `--profile`: when set, only answer requests whose DRANet
+  `NetworkConfig.profile` matches this value; otherwise all profiles are
+  accepted.
+
+### Enabling the webhook in DRANet
+
+Start the DRANet DaemonSet with the profile provider pointed at the webhook:
+
+```
+--profile-provider=webhook
+--webhook-url=unix:///var/run/dranet/webhook.sock
+```
+
+The native cloud provider can remain auto-detected (or `--cloud-provider-hint=AZURE`)
+so DRANet still publishes Azure topology attributes for scheduling while this
+webhook supplies the IPoIB IPAM.

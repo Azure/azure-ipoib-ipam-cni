@@ -48,6 +48,11 @@ vet: golangci-lint ## Run go vet against code.
 build: clean $(LOCALBIN) fmt vet ## Build manager binary.
 	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -o bin/azure-ipoib-ipam-cni ./cmd/
 	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -o bin/install ./cmd/install
+	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build -o bin/webhook ./cmd/webhook
+
+.PHONY: test
+test: ## Run unit tests.
+	go test ./...
 ##@ Build Dependencies
 
 .PHONY: install-dependencies
