@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/Azure/azure-ipoib-ipam-cni/pkg/ibaddrparser"
 )
@@ -18,13 +17,6 @@ import (
 // holds the IPoIB address mapping.
 const DefaultKVPStorePath = "/var/lib/hyperv/.kvp_pool_0"
 
-// DefaultCacheTTL is how long KVP store content is cached before it is re-read.
-// The HyperV KVP daemon rewrites pool records in place, so neither the file
-// size nor (reliably) its modification time change when values are updated.
-// A short time-based TTL therefore bounds staleness while still absorbing
-// bursts of requests.
-const DefaultCacheTTL = 5 * time.Second
-
 // Server implements the DRANet BYODP Profile Provider HTTP contract, resolving
 // IPoIB addresses from the HyperV KVP store via ibaddrparser.
 //
@@ -32,8 +24,10 @@ const DefaultCacheTTL = 5 * time.Second
 // hardware-discovery endpoints, so /health advertises cloudProvider=false.
 type Server struct {
 	// KVPStorePath is the path to the HyperV KVP pool file. Its contents are
-	// cached for up to CacheTTL and then re-read, so updates to the store are
-	// picked up within that window.
+	// read once at startup (Load) and only re-read when Reload is called, e.g.
+	// in response to a SIGHUP. The HyperV KVP daemon rewrites records in place,
+	// so the file cannot be reliably watched for changes; an explicit reload
+	// signal is used instead.
 	KVPStorePath string
 
 	// Profile, when non-empty, restricts this webhook to requests whose
@@ -41,34 +35,24 @@ type Server struct {
 	// answered with 404 Not Found. When empty, all profiles are accepted.
 	Profile string
 
-	// CacheTTL is how long cached KVP store content is served before it is
-	// re-read from disk. Zero disables caching (every request reads the file).
-	CacheTTL time.Duration
-
 	// readFile allows tests to stub file reads. When nil, os.ReadFile is used.
 	readFile func(string) ([]byte, error)
 
-	// now allows tests to control the clock used for cache expiry. When nil,
-	// time.Now is used.
-	now func() time.Time
-
-	// cacheMu guards the cached KVP store content below.
-	cacheMu sync.Mutex
-	// cache holds the last-read KVP store content.
-	cache []byte
-	// cacheExpiry is when the cached content becomes stale.
-	cacheExpiry time.Time
-	// cacheValid reports whether cache holds a previously read value.
-	cacheValid bool
+	// contentMu guards the in-memory KVP store content below.
+	contentMu sync.RWMutex
+	// content holds the KVP store bytes loaded at startup / last reload.
+	content []byte
+	// loaded reports whether content has been successfully loaded at least once.
+	loaded bool
 }
 
 // NewServer returns a Server with the given KVP store path and optional profile
-// gate.
+// gate. The KVP store is not read until Load is called.
 func NewServer(kvpStorePath, profile string) *Server {
 	if kvpStorePath == "" {
 		kvpStorePath = DefaultKVPStorePath
 	}
-	return &Server{KVPStorePath: kvpStorePath, Profile: profile, CacheTTL: DefaultCacheTTL}
+	return &Server{KVPStorePath: kvpStorePath, Profile: profile}
 }
 
 // Handler returns an http.Handler with all webhook routes registered.
@@ -82,37 +66,37 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-func (s *Server) read(path string) ([]byte, error) {
+// Load reads the KVP store into memory. It is intended to be called once at
+// startup; call Reload to refresh the content later.
+func (s *Server) Load() error {
+	return s.Reload()
+}
+
+// Reload re-reads the KVP store from disk and atomically replaces the in-memory
+// content. It is safe to call concurrently with request handling. On error the
+// previously loaded content is retained.
+func (s *Server) Reload() error {
 	readFile := s.readFile
 	if readFile == nil {
 		readFile = os.ReadFile
 	}
-
-	// Caching disabled: always read fresh.
-	if s.CacheTTL <= 0 {
-		return readFile(path)
-	}
-
-	now := time.Now
-	if s.now != nil {
-		now = s.now
-	}
-
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-
-	if s.cacheValid && now().Before(s.cacheExpiry) {
-		return s.cache, nil
-	}
-
-	content, err := readFile(path)
+	content, err := readFile(s.KVPStorePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	s.cache = content
-	s.cacheExpiry = now().Add(s.CacheTTL)
-	s.cacheValid = true
-	return content, nil
+	s.contentMu.Lock()
+	s.content = content
+	s.loaded = true
+	s.contentMu.Unlock()
+	return nil
+}
+
+// storeContent returns the in-memory KVP store content and whether it has been
+// loaded.
+func (s *Server) storeContent() ([]byte, bool) {
+	s.contentMu.RLock()
+	defer s.contentMu.RUnlock()
+	return s.content, s.loaded
 }
 
 // health advertises the webhook's capabilities. This webhook is a Profile
@@ -157,10 +141,11 @@ func (s *Server) getProfileConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := s.read(s.KVPStorePath)
-	if err != nil {
-		// Treat as a transient failure so kubelet retries NodePrepareResources.
-		http.Error(w, "failed to read KVP store: "+err.Error(), http.StatusInternalServerError)
+	content, loaded := s.storeContent()
+	if !loaded {
+		// The KVP store has not been loaded yet; treat as a transient failure
+		// so kubelet retries NodePrepareResources.
+		http.Error(w, "KVP store not loaded", http.StatusInternalServerError)
 		return
 	}
 

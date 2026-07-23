@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 )
 
 // realMAC is the full 20-octet InfiniBand hardware address as reported by the
@@ -26,6 +25,10 @@ func newTestServer(t *testing.T, profile string) *Server {
 	// Read the shared ibaddrparser fixture regardless of the requested path.
 	s.readFile = func(string) ([]byte, error) {
 		return os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
+	}
+	// Load the store once, mirroring startup behaviour.
+	if err := s.Load(); err != nil {
+		t.Fatalf("load KVP store: %v", err)
 	}
 	return s
 }
@@ -119,14 +122,26 @@ func TestGetProfileConfig_MalformedBody(t *testing.T) {
 	}
 }
 
-func TestGetProfileConfig_KVPReadError(t *testing.T) {
-	s := NewServer("", "")
+func TestGetProfileConfig_NotLoaded(t *testing.T) {
+	// A server that has never been loaded returns 500 so kubelet retries.
+	s := NewServer("kvp", "")
 	s.readFile = func(string) ([]byte, error) { return nil, errors.New("boom") }
 	w := doProfile(t, s, PathGetProfileConfig, ProfileRequest{
 		Device: DeviceIdentifiers{MAC: realMAC, Name: "ib0"},
 	})
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestLoad_Error(t *testing.T) {
+	s := NewServer("kvp", "")
+	s.readFile = func(string) ([]byte, error) { return nil, errors.New("boom") }
+	if err := s.Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+	if _, loaded := s.storeContent(); loaded {
+		t.Fatal("store reported loaded after a failed Load")
 	}
 }
 
@@ -162,75 +177,58 @@ func TestReleaseProfileConfig(t *testing.T) {
 	}
 }
 
-// TestKVPStoreCaching verifies that the KVP store content is cached for the
-// configured TTL and re-read once it expires. The HyperV KVP daemon rewrites
-// records in place (no size/mtime change), so caching is time-based.
-func TestKVPStoreCaching(t *testing.T) {
-	content, err := os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
+// TestReload verifies that content is read once at startup and only refreshed
+// when Reload is called (e.g. on SIGHUP), and that a failed reload keeps the
+// previously loaded content.
+func TestReload(t *testing.T) {
+	first, err := os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
 	var reads int
-	clock := time.Unix(1000, 0)
+	current := first
+	var readErr error
 
 	s := NewServer("kvp", "")
-	s.CacheTTL = 5 * time.Second
 	s.readFile = func(string) ([]byte, error) {
 		reads++
-		return content, nil
+		return current, readErr
 	}
-	s.now = func() time.Time { return clock }
+
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 
 	req := ProfileRequest{Device: DeviceIdentifiers{MAC: realMAC, Name: "ib0"}}
 
-	// Two requests within the TTL window should read from disk only once.
-	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
-		t.Fatalf("first request status = %d, want %d", w.Code, http.StatusOK)
-	}
-	clock = clock.Add(time.Second)
-	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
-		t.Fatalf("second request status = %d, want %d", w.Code, http.StatusOK)
-	}
-	if reads != 1 {
-		t.Fatalf("readFile called %d times, want 1 (content should be cached)", reads)
-	}
-
-	// Advancing past the TTL invalidates the cache and triggers a re-read,
-	// so in-place content updates are eventually picked up.
-	clock = clock.Add(5 * time.Second)
-	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
-		t.Fatalf("post-expiry request status = %d, want %d", w.Code, http.StatusOK)
-	}
-	if reads != 2 {
-		t.Fatalf("readFile called %d times, want 2 (cache should expire after TTL)", reads)
-	}
-}
-
-// TestKVPStoreCacheDisabled verifies that a zero TTL reads the file on every
-// request.
-func TestKVPStoreCacheDisabled(t *testing.T) {
-	content, err := os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-
-	var reads int
-	s := NewServer("kvp", "")
-	s.CacheTTL = 0
-	s.readFile = func(string) ([]byte, error) {
-		reads++
-		return content, nil
-	}
-
-	req := ProfileRequest{Device: DeviceIdentifiers{MAC: realMAC, Name: "ib0"}}
+	// Multiple requests must not re-read the file: only the initial Load did.
 	for i := 0; i < 3; i++ {
 		if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
 			t.Fatalf("request %d status = %d, want %d", i, w.Code, http.StatusOK)
 		}
 	}
-	if reads != 3 {
-		t.Fatalf("readFile called %d times, want 3 (caching disabled)", reads)
+	if reads != 1 {
+		t.Fatalf("readFile called %d times after Load + 3 requests, want 1", reads)
+	}
+
+	// A failed reload keeps the previously loaded content and returns an error.
+	readErr = errors.New("boom")
+	if err := s.Reload(); err == nil {
+		t.Fatal("Reload() error = nil, want non-nil")
+	}
+	if got, _ := s.storeContent(); string(got) != string(first) {
+		t.Fatal("failed Reload replaced content; want previous content retained")
+	}
+
+	// A successful reload picks up new content.
+	readErr = nil
+	current = []byte("changed")
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got, _ := s.storeContent(); string(got) != "changed" {
+		t.Fatalf("content after reload = %q, want %q", got, "changed")
 	}
 }
 func TestCloudProviderEndpointsNotImplemented(t *testing.T) {

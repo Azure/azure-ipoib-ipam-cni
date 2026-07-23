@@ -9,8 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
-	"time"
+	"syscall"
 
 	"github.com/Azure/azure-ipoib-ipam-cni/pkg/webhook"
 )
@@ -20,7 +21,6 @@ func main() {
 		bindAddress string
 		kvpPath     string
 		profile     string
-		cacheTTL    time.Duration
 	)
 
 	flag.StringVar(&bindAddress, "bind-address", ":8080",
@@ -32,22 +32,36 @@ func main() {
 	flag.StringVar(&profile, "profile", "",
 		"If set, only answer GetProfileConfig requests whose NetworkConfig.profile "+
 			"matches this value. If empty, all profiles are accepted.")
-	flag.DurationVar(&cacheTTL, "kvp-cache-ttl", webhook.DefaultCacheTTL,
-		"How long to cache the KVP store contents before re-reading. The HyperV "+
-			"KVP daemon rewrites records in place, so caching is time-based. Set "+
-			"to 0 to disable caching and read the file on every request.")
 	flag.Parse()
 
 	server := webhook.NewServer(kvpPath, profile)
-	server.CacheTTL = cacheTTL
+
+	// Read the KVP store once at startup. The store is only re-read on SIGHUP
+	// (or a process restart), so a missing/unreadable file at startup is fatal.
+	if err := server.Load(); err != nil {
+		log.Fatalf("failed to load KVP store %q: %v", kvpPath, err)
+	}
+
+	// Reload the KVP store on SIGHUP without restarting the process.
+	reloadCh := make(chan os.Signal, 1)
+	signal.Notify(reloadCh, syscall.SIGHUP)
+	go func() {
+		for range reloadCh {
+			if err := server.Reload(); err != nil {
+				log.Printf("failed to reload KVP store %q: %v (keeping previous content)", kvpPath, err)
+				continue
+			}
+			log.Printf("reloaded KVP store %q on SIGHUP", kvpPath)
+		}
+	}()
 
 	listener, err := listen(bindAddress)
 	if err != nil {
 		log.Fatalf("failed to listen on %q: %v", bindAddress, err)
 	}
 
-	log.Printf("starting azure-ipoib IPoIB webhook provider on %q (kvp-path=%q, profile=%q, kvp-cache-ttl=%s)",
-		bindAddress, kvpPath, profile, cacheTTL)
+	log.Printf("starting azure-ipoib IPoIB webhook provider on %q (kvp-path=%q, profile=%q); send SIGHUP to reload the KVP store",
+		bindAddress, kvpPath, profile)
 	if err := http.Serve(listener, server.Handler()); err != nil {
 		log.Fatalf("webhook server failed: %v", err)
 	}
