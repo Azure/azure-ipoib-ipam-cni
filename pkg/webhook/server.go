@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/Azure/azure-ipoib-ipam-cni/pkg/ibaddrparser"
 )
@@ -22,8 +24,9 @@ const DefaultKVPStorePath = "/var/lib/hyperv/.kvp_pool_0"
 // It is a Profile Provider only: it does not implement the Cloud Provider
 // hardware-discovery endpoints, so /health advertises cloudProvider=false.
 type Server struct {
-	// KVPStorePath is the path to the HyperV KVP pool file. It is read on
-	// every request so that updates to the store are picked up.
+	// KVPStorePath is the path to the HyperV KVP pool file. Its contents are
+	// cached and only re-read when the file's modification time or size
+	// changes, so updates to the store are still picked up.
 	KVPStorePath string
 
 	// Profile, when non-empty, restricts this webhook to requests whose
@@ -33,6 +36,19 @@ type Server struct {
 
 	// readFile allows tests to stub file reads. When nil, os.ReadFile is used.
 	readFile func(string) ([]byte, error)
+
+	// stat allows tests to stub file stat calls. When nil, os.Stat is used.
+	stat func(string) (os.FileInfo, error)
+
+	// cacheMu guards the cached KVP store content below.
+	cacheMu sync.Mutex
+	// cache holds the last-read KVP store content.
+	cache []byte
+	// cacheMod / cacheSize identify the file version the cache was read from.
+	cacheMod  time.Time
+	cacheSize int64
+	// cacheValid reports whether cache holds a previously read value.
+	cacheValid bool
 }
 
 // NewServer returns a Server with the given KVP store path and optional profile
@@ -56,10 +72,38 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) read(path string) ([]byte, error) {
-	if s.readFile != nil {
-		return s.readFile(path)
+	readFile := s.readFile
+	if readFile == nil {
+		readFile = os.ReadFile
 	}
-	return os.ReadFile(path)
+	statFn := s.stat
+	if statFn == nil {
+		statFn = os.Stat
+	}
+
+	// Stat the file to detect changes. If stat fails (e.g. the path is not a
+	// real file, as in tests), skip caching and read directly.
+	info, err := statFn(path)
+	if err != nil {
+		return readFile(path)
+	}
+
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	if s.cacheValid && s.cacheMod.Equal(info.ModTime()) && s.cacheSize == info.Size() {
+		return s.cache, nil
+	}
+
+	content, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	s.cache = content
+	s.cacheMod = info.ModTime()
+	s.cacheSize = info.Size()
+	s.cacheValid = true
+	return content, nil
 }
 
 // health advertises the webhook's capabilities. This webhook is a Profile

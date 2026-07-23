@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 // realMAC is the full 20-octet InfiniBand hardware address as reported by the
@@ -161,6 +162,62 @@ func TestReleaseProfileConfig(t *testing.T) {
 	}
 }
 
+// TestKVPStoreCaching verifies that the KVP store content is cached between
+// requests and only re-read when the file's modification time or size changes.
+func TestKVPStoreCaching(t *testing.T) {
+	content, err := os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	var reads int
+	mod := time.Unix(1000, 0)
+	size := int64(len(content))
+
+	s := NewServer("kvp", "")
+	s.readFile = func(string) ([]byte, error) {
+		reads++
+		return content, nil
+	}
+	s.stat = func(string) (os.FileInfo, error) {
+		return fakeFileInfo{modTime: mod, size: size}, nil
+	}
+
+	req := ProfileRequest{Device: DeviceIdentifiers{MAC: realMAC, Name: "ib0"}}
+
+	// Two requests against an unchanged file should read from disk only once.
+	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
+		t.Fatalf("second request status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if reads != 1 {
+		t.Fatalf("readFile called %d times, want 1 (content should be cached)", reads)
+	}
+
+	// Changing the modification time invalidates the cache and triggers a re-read.
+	mod = time.Unix(2000, 0)
+	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
+		t.Fatalf("post-change request status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if reads != 2 {
+		t.Fatalf("readFile called %d times, want 2 (cache should invalidate on change)", reads)
+	}
+}
+
+// fakeFileInfo is a minimal os.FileInfo used to drive the cache in tests.
+type fakeFileInfo struct {
+	modTime time.Time
+	size    int64
+}
+
+func (f fakeFileInfo) Name() string       { return "kvp" }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode  { return 0 }
+func (f fakeFileInfo) ModTime() time.Time { return f.modTime }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() interface{}   { return nil }
 func TestCloudProviderEndpointsNotImplemented(t *testing.T) {
 	s := newTestServer(t, "")
 	for _, path := range []string{PathGetDeviceAttributes, PathGetDeviceConfig} {
