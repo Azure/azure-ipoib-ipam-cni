@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+apiVersion: v2
+name: azure-ipoib-webhook
+description: |
+  Standalone DaemonSet that runs the azure-ipoib IPoIB DRANet BYODP Profile
+  Provider webhook node-local, alongside the DRANet DaemonSet. Optionally
+  installs the azure-ipoib-ipam-cni CNI binary into the host CNI bin directory.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/Azure/azure-ipoib-ipam-cni
+sources:
+  - https://github.com/Azure/azure-ipoib-ipam-cni
+keywords:
+  - dranet
+  - ipoib
+  - infiniband
+  - cni
+  - ipam

@@ -1,0 +1,21 @@
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+
+The azure-ipoib IPoIB webhook DaemonSet "{{ include "azure-ipoib-webhook.fullname" . }}"
+has been deployed to namespace "{{ .Release.Namespace }}".
+
+The webhook listens on:
+  {{ .Values.webhook.bindAddress }}
+
+Point the DRANet DaemonSet at it with:
+  --profile-provider=webhook
+  --webhook-url={{ .Values.webhook.bindAddress }}
+
+{{ if .Values.installCNIBinary.enabled -}}
+CNI binary installation is ENABLED. The azure-ipoib-ipam-cni plugin binary is
+copied into {{ .Values.installCNIBinary.cniBinDir }} on each node.
+{{- else -}}
+CNI binary installation is DISABLED (installCNIBinary.enabled=false). Enable it
+with --set installCNIBinary.enabled=true if this DaemonSet should place the CNI
+plugin binary into the host CNI bin directory.
+{{- end }}

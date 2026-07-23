@@ -1,0 +1,70 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+#
+# Standalone DaemonSet that runs the azure-ipoib IPoIB DRANet BYODP Profile
+# Provider webhook node-local, alongside (but separate from) the DRANet
+# DaemonSet.
+#
+# The webhook listens on a Unix socket in a host directory that is shared with
+# the DRANet DaemonSet. Point DRANet at the same socket with:
+#
+#   --profile-provider=webhook
+#   --webhook-url=unix:///var/run/dranet/webhook.sock
+#
+# The HyperV KVP pool file is mounted read-only so the webhook can resolve the
+# IPoIB address for each requested device.
+#
+# If you would rather run the webhook inside the DRANet Pod itself, use
+# deploy/dranet-with-webhook-sidecar.yaml instead.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: azure-ipoib-webhook
+  namespace: kube-system
+  labels:
+    tier: node
+    app: azure-ipoib-webhook
+    k8s-app: azure-ipoib-webhook
+spec:
+  selector:
+    matchLabels:
+      app: azure-ipoib-webhook
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: azure-ipoib-webhook
+        k8s-app: azure-ipoib-webhook
+    spec:
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: webhook
+        image: ghcr.io/azure/azure-ipoib-ipam-cni-webhook:latest
+        args:
+        - /webhook
+        - --bind-address=unix:///var/run/dranet/webhook.sock
+        - --kvp-path=/var/lib/hyperv/.kvp_pool_0
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+        volumeMounts:
+        - name: webhook-socket
+          mountPath: /var/run/dranet
+        - name: kvp
+          mountPath: /var/lib/hyperv/.kvp_pool_0
+          readOnly: true
+      volumes:
+      # Shared with the DRANet DaemonSet so it can dial the webhook socket.
+      - name: webhook-socket
+        hostPath:
+          path: /var/run/dranet
+          type: DirectoryOrCreate
+      - name: kvp
+        hostPath:
+          path: /var/lib/hyperv/.kvp_pool_0
+          type: File

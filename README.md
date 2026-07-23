@@ -1,7 +1,7 @@
 # azure-ipoib-ipam-cni
 
 ## Overview
-azure-ipoib-ipam-cni is intended to be used as a ipam CNI plugin for Kubernetes.It will retrieve an IP address from HyperV kv pair and assign it to the ib nic. It is designed to be used in conjunction with the [host-device](https://www.cni.dev/plugins/current/main/host-device/) and [network operator](https://github.com/Mellanox/network-operator).
+azure-ipoib-ipam-cni is intended to be used as an IPAM CNI plugin for Kubernetes. It will retrieve an IP address from a HyperV kv pair and assign it to the IB NIC. It is designed to be used in conjunction with the [host-device](https://www.cni.dev/plugins/current/main/host-device/) and [network operator](https://github.com/Mellanox/network-operator).
 
 ## Requirements
 
@@ -118,3 +118,96 @@ root@nicworkspace-594fc84669-zlqn6:/# ip a
     inet6 fe80::215:5dff:fd33:ff0b/64 scope link
        valid_lft forever preferred_lft forever
 ```
+
+## Usage with DRANet (Profile Provider webhook)
+
+[DRANet](https://github.com/kubernetes-sigs/dranet) is a Kubernetes network
+driver built on Dynamic Resource Allocation (DRA). It attaches devices to Pods
+via NRI instead of the CNI `host-device` chain, so the CNI IPAM plugin above is
+not invoked. To supply IPoIB addresses from the HyperV KVP store in a DRANet
+cluster, this repository also ships a DRANet
+[Bring Your Own DRANet Provider (BYODP)](https://dranet.sigs.k8s.io/docs/contributing/webhook-providers/)
+**Profile Provider** webhook (`cmd/webhook`).
+
+The webhook reuses the same MAC-to-IP resolution logic as the CNI plugin
+(`pkg/ibaddrparser`). On `GetProfileConfig`, DRANet passes the device's MAC
+address; the webhook reads `/var/lib/hyperv/.kvp_pool_0`, resolves the IPoIB
+address, and returns it to DRANet as an interface address. Because the KVP store
+is a read-only mapping, `ReleaseProfileConfig` is a no-op and the webhook is
+naturally idempotent.
+
+### Running the webhook
+
+The webhook is meant to run node-local alongside the DRANet DaemonSet (as a
+sidecar or a separate DaemonSet), with the HyperV KVP store mounted read-only
+and, for the Unix-socket transport, a shared socket directory.
+
+```
+webhook \
+  --bind-address=unix:///var/run/dranet/webhook.sock \
+  --kvp-path=/var/lib/hyperv/.kvp_pool_0
+```
+
+Ready-to-apply manifests live in [`deploy/`](deploy):
+
+* [`deploy/webhook-daemonset.yaml`](deploy/webhook-daemonset.yaml) runs the
+  webhook as its own DaemonSet next to an existing DRANet DaemonSet. Both share
+  the `/var/run/dranet` host directory so DRANet can dial the webhook's Unix
+  socket.
+
+  ```bash
+  kubectl apply -f deploy/webhook-daemonset.yaml
+  ```
+
+  A Helm chart for this standalone DaemonSet is provided at
+  [`charts/azure-ipoib-webhook`](charts/azure-ipoib-webhook):
+
+  ```bash
+  helm install azure-ipoib-webhook ./charts/azure-ipoib-webhook -n kube-system
+  ```
+
+  The chart can also install the `azure-ipoib-ipam-cni` CNI plugin binary into
+  the default CNI location (`/opt/cni/bin`) via an init container. This is
+  **disabled by default**; enable it with:
+
+  ```bash
+  helm install azure-ipoib-webhook ./charts/azure-ipoib-webhook -n kube-system \
+    --set installCNIBinary.enabled=true
+  ```
+
+* [`deploy/dranet-with-webhook-sidecar.yaml`](deploy/dranet-with-webhook-sidecar.yaml)
+  is an example DRANet DaemonSet with the webhook running as a sidecar container
+  in the same Pod, sharing the socket via an `emptyDir` volume and already
+  wired up with the `--profile-provider`/`--webhook-url` flags below.
+
+  ```bash
+  kubectl apply -f deploy/dranet-with-webhook-sidecar.yaml
+  ```
+
+Both manifests use the `ghcr.io/azure/azure-ipoib-ipam-cni-webhook` image built
+from [`Dockerfile.webhook`](Dockerfile.webhook); adjust the image tag to match
+your build.
+
+Flags:
+
+* `--bind-address`: a TCP address (e.g. `:8080`) or a Unix socket path prefixed
+  with `unix://` (e.g. `unix:///var/run/dranet/webhook.sock`). DRANet supports
+  both transports via its `--webhook-url` flag.
+* `--kvp-path`: path to the HyperV KVP pool file (default
+  `/var/lib/hyperv/.kvp_pool_0`).
+* `--profile`: when set, only answer requests whose DRANet
+  `NetworkConfig.profile` matches this value; otherwise all profiles are
+  accepted.
+
+### Enabling the webhook in DRANet
+
+Start the DRANet DaemonSet with the profile provider pointed at the webhook:
+
+```
+--profile-provider=webhook
+--webhook-url=unix:///var/run/dranet/webhook.sock
+```
+
+The native cloud provider can remain auto-detected (or `--cloud-provider-hint=AZURE`)
+so DRANet still publishes Azure topology attributes for scheduling while this
+webhook supplies the IPoIB IPAM.
