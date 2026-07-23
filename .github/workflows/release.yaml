@@ -31,7 +31,10 @@ jobs:
       - name: Build binary
         run: |
           rm -rf ./bin
-          ARCH=${{ matrix.arch }} make build
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o bin/azure-ipoib-ipam-cni ./cmd/
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o bin/install ./cmd/install
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o bin/webhook ./cmd/webhook
           mv bin/azure-ipoib-ipam-cni bin/azure-ipoib-ipam-cni-${{ matrix.os }}-${{ matrix.arch }}
       - uses: actions/upload-artifact@v7.0.0 # v3.1.3
         with:
