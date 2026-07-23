@@ -148,6 +148,21 @@ webhook \
   --kvp-path=/var/lib/hyperv/.kvp_pool_0
 ```
 
+Ready-to-apply manifests live in [`deploy/`](deploy):
+
+* [`deploy/webhook-daemonset.yaml`](deploy/webhook-daemonset.yaml) runs the
+  webhook as its own DaemonSet next to an existing DRANet DaemonSet. Both share
+  the `/var/run/dranet` host directory so DRANet can dial the webhook's Unix
+  socket.
+* [`deploy/dranet-with-webhook-sidecar.yaml`](deploy/dranet-with-webhook-sidecar.yaml)
+  is an example DRANet DaemonSet with the webhook running as a sidecar container
+  in the same Pod, sharing the socket via an `emptyDir` volume and already
+  wired up with the `--profile-provider`/`--webhook-url` flags below.
+
+Both manifests use the `ghcr.io/azure/azure-ipoib-ipam-cni-webhook` image built
+from [`Dockerfile.webhook`](Dockerfile.webhook); adjust the image tag to match
+your build.
+
 Flags:
 
 * `--bind-address`: a TCP address (e.g. `:8080`) or a Unix socket path prefixed
