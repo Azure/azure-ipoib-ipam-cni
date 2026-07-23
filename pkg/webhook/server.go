@@ -18,6 +18,13 @@ import (
 // holds the IPoIB address mapping.
 const DefaultKVPStorePath = "/var/lib/hyperv/.kvp_pool_0"
 
+// DefaultCacheTTL is how long KVP store content is cached before it is re-read.
+// The HyperV KVP daemon rewrites pool records in place, so neither the file
+// size nor (reliably) its modification time change when values are updated.
+// A short time-based TTL therefore bounds staleness while still absorbing
+// bursts of requests.
+const DefaultCacheTTL = 5 * time.Second
+
 // Server implements the DRANet BYODP Profile Provider HTTP contract, resolving
 // IPoIB addresses from the HyperV KVP store via ibaddrparser.
 //
@@ -25,8 +32,8 @@ const DefaultKVPStorePath = "/var/lib/hyperv/.kvp_pool_0"
 // hardware-discovery endpoints, so /health advertises cloudProvider=false.
 type Server struct {
 	// KVPStorePath is the path to the HyperV KVP pool file. Its contents are
-	// cached and only re-read when the file's modification time or size
-	// changes, so updates to the store are still picked up.
+	// cached for up to CacheTTL and then re-read, so updates to the store are
+	// picked up within that window.
 	KVPStorePath string
 
 	// Profile, when non-empty, restricts this webhook to requests whose
@@ -34,19 +41,23 @@ type Server struct {
 	// answered with 404 Not Found. When empty, all profiles are accepted.
 	Profile string
 
+	// CacheTTL is how long cached KVP store content is served before it is
+	// re-read from disk. Zero disables caching (every request reads the file).
+	CacheTTL time.Duration
+
 	// readFile allows tests to stub file reads. When nil, os.ReadFile is used.
 	readFile func(string) ([]byte, error)
 
-	// stat allows tests to stub file stat calls. When nil, os.Stat is used.
-	stat func(string) (os.FileInfo, error)
+	// now allows tests to control the clock used for cache expiry. When nil,
+	// time.Now is used.
+	now func() time.Time
 
 	// cacheMu guards the cached KVP store content below.
 	cacheMu sync.Mutex
 	// cache holds the last-read KVP store content.
 	cache []byte
-	// cacheMod / cacheSize identify the file version the cache was read from.
-	cacheMod  time.Time
-	cacheSize int64
+	// cacheExpiry is when the cached content becomes stale.
+	cacheExpiry time.Time
 	// cacheValid reports whether cache holds a previously read value.
 	cacheValid bool
 }
@@ -57,7 +68,7 @@ func NewServer(kvpStorePath, profile string) *Server {
 	if kvpStorePath == "" {
 		kvpStorePath = DefaultKVPStorePath
 	}
-	return &Server{KVPStorePath: kvpStorePath, Profile: profile}
+	return &Server{KVPStorePath: kvpStorePath, Profile: profile, CacheTTL: DefaultCacheTTL}
 }
 
 // Handler returns an http.Handler with all webhook routes registered.
@@ -76,22 +87,21 @@ func (s *Server) read(path string) ([]byte, error) {
 	if readFile == nil {
 		readFile = os.ReadFile
 	}
-	statFn := s.stat
-	if statFn == nil {
-		statFn = os.Stat
+
+	// Caching disabled: always read fresh.
+	if s.CacheTTL <= 0 {
+		return readFile(path)
 	}
 
-	// Stat the file to detect changes. If stat fails (e.g. the path is not a
-	// real file, as in tests), skip caching and read directly.
-	info, err := statFn(path)
-	if err != nil {
-		return readFile(path)
+	now := time.Now
+	if s.now != nil {
+		now = s.now
 	}
 
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 
-	if s.cacheValid && s.cacheMod.Equal(info.ModTime()) && s.cacheSize == info.Size() {
+	if s.cacheValid && now().Before(s.cacheExpiry) {
 		return s.cache, nil
 	}
 
@@ -100,8 +110,7 @@ func (s *Server) read(path string) ([]byte, error) {
 		return nil, err
 	}
 	s.cache = content
-	s.cacheMod = info.ModTime()
-	s.cacheSize = info.Size()
+	s.cacheExpiry = now().Add(s.CacheTTL)
 	s.cacheValid = true
 	return content, nil
 }

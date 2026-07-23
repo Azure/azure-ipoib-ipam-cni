@@ -162,8 +162,9 @@ func TestReleaseProfileConfig(t *testing.T) {
 	}
 }
 
-// TestKVPStoreCaching verifies that the KVP store content is cached between
-// requests and only re-read when the file's modification time or size changes.
+// TestKVPStoreCaching verifies that the KVP store content is cached for the
+// configured TTL and re-read once it expires. The HyperV KVP daemon rewrites
+// records in place (no size/mtime change), so caching is time-based.
 func TestKVPStoreCaching(t *testing.T) {
 	content, err := os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
 	if err != nil {
@@ -171,24 +172,23 @@ func TestKVPStoreCaching(t *testing.T) {
 	}
 
 	var reads int
-	mod := time.Unix(1000, 0)
-	size := int64(len(content))
+	clock := time.Unix(1000, 0)
 
 	s := NewServer("kvp", "")
+	s.CacheTTL = 5 * time.Second
 	s.readFile = func(string) ([]byte, error) {
 		reads++
 		return content, nil
 	}
-	s.stat = func(string) (os.FileInfo, error) {
-		return fakeFileInfo{modTime: mod, size: size}, nil
-	}
+	s.now = func() time.Time { return clock }
 
 	req := ProfileRequest{Device: DeviceIdentifiers{MAC: realMAC, Name: "ib0"}}
 
-	// Two requests against an unchanged file should read from disk only once.
+	// Two requests within the TTL window should read from disk only once.
 	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
 		t.Fatalf("first request status = %d, want %d", w.Code, http.StatusOK)
 	}
+	clock = clock.Add(time.Second)
 	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
 		t.Fatalf("second request status = %d, want %d", w.Code, http.StatusOK)
 	}
@@ -196,28 +196,43 @@ func TestKVPStoreCaching(t *testing.T) {
 		t.Fatalf("readFile called %d times, want 1 (content should be cached)", reads)
 	}
 
-	// Changing the modification time invalidates the cache and triggers a re-read.
-	mod = time.Unix(2000, 0)
+	// Advancing past the TTL invalidates the cache and triggers a re-read,
+	// so in-place content updates are eventually picked up.
+	clock = clock.Add(5 * time.Second)
 	if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
-		t.Fatalf("post-change request status = %d, want %d", w.Code, http.StatusOK)
+		t.Fatalf("post-expiry request status = %d, want %d", w.Code, http.StatusOK)
 	}
 	if reads != 2 {
-		t.Fatalf("readFile called %d times, want 2 (cache should invalidate on change)", reads)
+		t.Fatalf("readFile called %d times, want 2 (cache should expire after TTL)", reads)
 	}
 }
 
-// fakeFileInfo is a minimal os.FileInfo used to drive the cache in tests.
-type fakeFileInfo struct {
-	modTime time.Time
-	size    int64
-}
+// TestKVPStoreCacheDisabled verifies that a zero TTL reads the file on every
+// request.
+func TestKVPStoreCacheDisabled(t *testing.T) {
+	content, err := os.ReadFile("../ibaddrparser/testdata/.kvp_pool_0")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
 
-func (f fakeFileInfo) Name() string       { return "kvp" }
-func (f fakeFileInfo) Size() int64        { return f.size }
-func (f fakeFileInfo) Mode() os.FileMode  { return 0 }
-func (f fakeFileInfo) ModTime() time.Time { return f.modTime }
-func (f fakeFileInfo) IsDir() bool        { return false }
-func (f fakeFileInfo) Sys() interface{}   { return nil }
+	var reads int
+	s := NewServer("kvp", "")
+	s.CacheTTL = 0
+	s.readFile = func(string) ([]byte, error) {
+		reads++
+		return content, nil
+	}
+
+	req := ProfileRequest{Device: DeviceIdentifiers{MAC: realMAC, Name: "ib0"}}
+	for i := 0; i < 3; i++ {
+		if w := doProfile(t, s, PathGetProfileConfig, req); w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d", i, w.Code, http.StatusOK)
+		}
+	}
+	if reads != 3 {
+		t.Fatalf("readFile called %d times, want 3 (caching disabled)", reads)
+	}
+}
 func TestCloudProviderEndpointsNotImplemented(t *testing.T) {
 	s := newTestServer(t, "")
 	for _, path := range []string{PathGetDeviceAttributes, PathGetDeviceConfig} {
