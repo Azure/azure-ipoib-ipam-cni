@@ -1,0 +1,101 @@
+{{/*
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+
+Standalone DaemonSet that runs the azure-ipoib IPoIB DRANet BYODP Profile
+Provider webhook node-local, alongside (but separate from) the DRANet DaemonSet.
+
+The webhook listens on a Unix socket in a host directory that is shared with the
+DRANet DaemonSet. Point DRANet at the same socket with:
+
+  --profile-provider=webhook
+  --webhook-url={{ .Values.webhook.bindAddress }}
+
+When installCNIBinary.enabled is true, an init container also copies the
+azure-ipoib-ipam-cni CNI plugin binary into the host CNI bin directory
+({{ .Values.installCNIBinary.cniBinDir }}).
+*/}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "azure-ipoib-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "azure-ipoib-webhook.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "azure-ipoib-webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "azure-ipoib-webhook.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      hostNetwork: {{ .Values.hostNetwork }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.installCNIBinary.enabled }}
+      initContainers:
+      # Copies the azure-ipoib-ipam-cni CNI plugin binary into the host CNI bin
+      # directory. The image entrypoint (/install) writes the binary to
+      # /opt/cni/bin, which is mounted here from the host cniBinDir.
+      - name: install-cni-binary
+        image: "{{ .Values.installCNIBinary.image.repository }}:{{ .Values.installCNIBinary.image.tag }}"
+        imagePullPolicy: {{ .Values.installCNIBinary.image.pullPolicy }}
+        volumeMounts:
+        - name: cni-bin
+          mountPath: /opt/cni/bin
+      {{- end }}
+      containers:
+      - name: webhook
+        image: "{{ .Values.webhook.image.repository }}:{{ .Values.webhook.image.tag }}"
+        imagePullPolicy: {{ .Values.webhook.image.pullPolicy }}
+        args:
+        - /webhook
+        - --bind-address={{ .Values.webhook.bindAddress }}
+        - --kvp-path={{ .Values.webhook.kvpPath }}
+        {{- if .Values.webhook.profile }}
+        - --profile={{ .Values.webhook.profile }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.webhook.resources | nindent 10 }}
+        volumeMounts:
+        - name: webhook-socket
+          mountPath: {{ .Values.socketDir }}
+        - name: kvp
+          mountPath: {{ .Values.webhook.kvpPath }}
+          readOnly: true
+      volumes:
+      # Shared with the DRANet DaemonSet so it can dial the webhook socket.
+      - name: webhook-socket
+        hostPath:
+          path: {{ .Values.socketDir }}
+          type: DirectoryOrCreate
+      - name: kvp
+        hostPath:
+          path: {{ .Values.webhook.kvpPath }}
+          type: File
+      {{- if .Values.installCNIBinary.enabled }}
+      - name: cni-bin
+        hostPath:
+          path: {{ .Values.installCNIBinary.cniBinDir }}
+          type: DirectoryOrCreate
+      {{- end }}

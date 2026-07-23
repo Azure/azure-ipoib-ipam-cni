@@ -159,6 +159,22 @@ Ready-to-apply manifests live in [`deploy/`](deploy):
   kubectl apply -f deploy/webhook-daemonset.yaml
   ```
 
+  A Helm chart for this standalone DaemonSet is provided at
+  [`charts/azure-ipoib-webhook`](charts/azure-ipoib-webhook):
+
+  ```bash
+  helm install azure-ipoib-webhook ./charts/azure-ipoib-webhook -n kube-system
+  ```
+
+  The chart can also install the `azure-ipoib-ipam-cni` CNI plugin binary into
+  the default CNI location (`/opt/cni/bin`) via an init container. This is
+  **disabled by default**; enable it with:
+
+  ```bash
+  helm install azure-ipoib-webhook ./charts/azure-ipoib-webhook -n kube-system \
+    --set installCNIBinary.enabled=true
+  ```
+
 * [`deploy/dranet-with-webhook-sidecar.yaml`](deploy/dranet-with-webhook-sidecar.yaml)
   is an example DRANet DaemonSet with the webhook running as a sidecar container
   in the same Pod, sharing the socket via an `emptyDir` volume and already

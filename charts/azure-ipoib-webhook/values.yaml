@@ -1,0 +1,64 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+# nameOverride / fullnameOverride let you customize the generated resource names.
+nameOverride: ""
+fullnameOverride: ""
+
+# webhook is the azure-ipoib IPoIB DRANet Profile Provider webhook container.
+webhook:
+  image:
+    repository: ghcr.io/azure/azure-ipoib-ipam-cni-webhook
+    tag: latest
+    pullPolicy: IfNotPresent
+  # bindAddress is where the webhook listens. Use a "unix://" socket path so the
+  # DRANet DaemonSet can dial it over the shared host socket directory.
+  bindAddress: unix:///var/run/dranet/webhook.sock
+  # kvpPath is the HyperV KVP pool file that holds the IPoIB address mapping.
+  kvpPath: /var/lib/hyperv/.kvp_pool_0
+  # profile, when set, restricts the webhook to requests whose DRANet
+  # NetworkConfig.profile matches this value. Empty means all profiles.
+  profile: ""
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+
+# installCNIBinary controls an optional init container that copies the
+# azure-ipoib-ipam-cni CNI plugin binary onto the host CNI bin directory.
+#
+# It is DISABLED by default. Enable it only when this DaemonSet is responsible
+# for placing the CNI binary (i.e. when you are not distributing it some other
+# way). When enabled, the CNI binary is written to `cniBinDir` (the default CNI
+# plugin location, /opt/cni/bin).
+installCNIBinary:
+  enabled: false
+  image:
+    repository: ghcr.io/azure/azure-ipoib-ipam-cni
+    tag: latest
+    pullPolicy: IfNotPresent
+  # cniBinDir is the host directory where CNI plugin binaries live.
+  cniBinDir: /opt/cni/bin
+
+# socketDir is the host directory shared with the DRANet DaemonSet for the
+# webhook Unix socket. It must match the directory in webhook.bindAddress and in
+# DRANet's --webhook-url.
+socketDir: /var/run/dranet
+
+# hostNetwork runs the DaemonSet pods on the host network namespace.
+hostNetwork: true
+
+# tolerations default to scheduling on every node, matching the DRANet DaemonSet.
+tolerations:
+  - operator: Exists
+    effect: NoSchedule
+
+nodeSelector: {}
+
+affinity: {}
+
+# imagePullSecrets for pulling the webhook / CNI installer images.
+imagePullSecrets: []
+
+# podAnnotations are added to the DaemonSet pod template.
+podAnnotations: {}
